@@ -21,7 +21,12 @@ package com.datamelt.rules.parser.xml;
 import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.InputStream;
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.Map;
 
 import javax.xml.parsers.SAXParser;
 import javax.xml.parsers.SAXParserFactory;
@@ -35,6 +40,7 @@ import org.xml.sax.helpers.DefaultHandler;
 import com.datamelt.rules.core.ActionObject;
 import com.datamelt.rules.core.Parameter;
 import com.datamelt.rules.core.ReferenceField;
+import com.datamelt.rules.core.RuleCollection;
 import com.datamelt.rules.core.RuleGroup;
 import com.datamelt.rules.core.RuleMessage;
 import com.datamelt.rules.core.RuleObject;
@@ -144,6 +150,192 @@ public class Parser extends DefaultHandler implements ContentHandler
     public Parser(VariableReplacer replacer)
     {
         this.replacer = replacer;
+    }
+    
+    /**
+     * pass an mysql connection and a projectid to this method, which will
+     * in turn be parsed.
+     * 
+     * Because the database contains all projects we have to define a specific project we want to use
+     *
+     * @param    db        the mysql connection to use for parsing
+     * @param	 projectId the projectid to use for parsing
+     * @throws Exception    exception during parsing
+     */
+    public void parse(Connection db, int projectId) throws Exception {
+    	// First we have to get some general information about the project
+        PreparedStatement subGroupPS = db.prepareStatement("SELECT rulesubgroup.id, rulegroup_id, rulesubgroup.name, rulesubgroup.description, intergroupoperator, ruleoperator FROM ruleengine_rules.rulesubgroup WHERE rulegroup_id = ?");
+        PreparedStatement rulePS = db.prepareStatement("SELECT rule.id, rule.description, rulesubgroup_id, rule.name, object1_parametertype_id, object1_parameter, object1_type_id, object2_parametertype_id, object2_parameter, object2_type_id, expectedvalue, expectedvalue_type_id, additional_parameter, additional_parameter_type_id, message_passed, message_failed, check.package AS check_package, check.class as check_class, check.check_single_field AS check_single_field FROM ruleengine_rules.rule INNER JOIN ruleengine_rules.check ON rule.check_id = check.id WHERE rulesubgroup_id = ?");
+        PreparedStatement actionPS = db.prepareStatement("SELECT rulegroupaction.id, rulegroup_id, rulegroupaction.name, rulegroupaction.description, object1_parametertype_id, object1_parameter, object1_type_id, object2_parametertype_id, object2_parameter, object2_type_id, object3_parametertype_id, object3_parameter, object3_type_id , parameter1, parameter1_type_id, parameter2, parameter2_type_id, parameter3, parameter3_type_id, execute_if, action.description AS action_description, action.classname AS action_classname, action.methodname AS action_methodname, action.methoddisplayname AS action_methoddisplayname FROM ruleengine_rules.rulegroupaction INNER JOIN ruleengine_rules.action ON rulegroupaction.action_id = action.id WHERE rulegroup_id = ?");
+        PreparedStatement referenceFieldPS = db.prepareStatement("SELECT id, project_id, name, name_descriptive, description, java_type_id FROM ruleengine_rules.reference_fields WHERE project_id = ?");
+
+        // Create types dictionary to make conversions
+        PreparedStatement parameterPS = db.prepareStatement("SELECT id, name FROM ruleengine_rules.types");
+        ResultSet parameterRS = parameterPS.executeQuery();
+        Map<Integer, String> types = new HashMap<>();
+        while (parameterRS.next()) {
+            types.put(parameterRS.getInt("id"), parameterRS.getString("name"));
+        }
+        parameterPS.close();
+
+        // Create project dictionary
+        PreparedStatement projectPS = db.prepareStatement("SELECT name, description, object_classname, object_method_getter, object_method_setter FROM ruleengine_rules.project");
+        ResultSet projectRS = projectPS.executeQuery();
+        Map<String, String> project = new HashMap<>();
+        while (projectRS.next()) {
+            project.put("name", projectRS.getString("name"));
+            project.put("description", projectRS.getString("description"));
+            project.put("object_classname", projectRS.getString("object_classname"));
+            project.put("object_method_getter", projectRS.getString("object_method_getter"));
+            project.put("object_method_setter", projectRS.getString("object_method_setter"));
+        }
+        projectPS.close();
+
+        // Get all groups which belong to the project
+        PreparedStatement groupPS = db.prepareStatement("SELECT id, project_id, name, description, valid_from, valid_until, dependent_rulegroup_id, dependent_rulegroup_execute_if, disabled FROM ruleengine_rules.rulegroup WHERE project_id = ?");
+        groupPS.setInt(1, projectId);
+        ResultSet groupRS = groupPS.executeQuery();
+        while (groupRS.next()) {
+        	// Enrich group object with information in table
+            group = new RuleGroup(groupRS.getString("id"), groupRS.getNString("description"));
+            group.setValidFrom(groupRS.getString("valid_from"));
+            group.setValidUntil(groupRS.getString("valid_until"));
+            group.setDependentRuleGroupId(groupRS.getString("dependent_rulegroup_id"));
+            group.setDependentRuleGroupExecuteIf(groupRS.getInt("dependent_rulegroup_execute_if"));
+            subGroupPS.setInt(1, Integer.parseInt(group.getId()));
+            
+            // Get all subgroups belonging to this group
+            ResultSet subGroupRS = subGroupPS.executeQuery();
+            while (subGroupRS.next()) {
+                subgroup = new RuleSubGroup(subGroupRS.getString("id"), subGroupRS.getString("description"), subGroupRS.getString("intergroupoperator"), subGroupRS.getString("ruleoperator"));
+                
+                // Get all rules belonging to this subgroup
+                rulePS.setInt(1, Integer.parseInt(subgroup.getId()));
+                ResultSet ruleRS = rulePS.executeQuery();
+                // Because there could be more than one rule it is stored in a collection
+                RuleCollection ruleCol = new RuleCollection();
+                while (ruleRS.next()) {
+                	// "A RuleObject a RuleObject identifies an object that will be instantiated and one of its methods will be run"
+                	// most of the time this is "getFieldValue", as in read the value from a column
+                	// some rules get value from multiple column, so multiple objects are possible
+                    RuleObject ruleObject = new RuleObject(project.get("object_classname"), project.get("object_method_getter"), types.get(ruleRS.getInt("object1_type_id")), ruleRS.getString("object1_parameter"), types.get(Integer.parseInt(ruleRS.getString("object1_parametertype_id"))));
+                    xmlRule = new XmlRule(ruleRS.getString("id"), ruleRS.getString("description"));
+                    xmlRule.getRuleObjects().add(ruleObject);
+                    // Only add the other RuleObject if its present
+                    if (ruleRS.getObject("object2_parameter") != null) {
+                    	RuleObject ruleObject2 = new RuleObject(project.get("object_classname"), project.get("object_method_getter"), types.get(ruleRS.getInt("object2_type_id")), ruleRS.getString("object2_parameter"), types.get(Integer.parseInt(ruleRS.getString("object2_parametertype_id"))));
+                    	xmlRule.getRuleObjects().add(ruleObject2);
+                    }
+                    // Additional parameters are optional
+                    if (ruleRS.getObject("additional_parameter") != null) {
+                        xmlRule.addParameter(new Parameter(types.get(Integer.parseInt(ruleRS.getString("additional_parameter_type_id"))), ruleRS.getString("additional_parameter")));
+                    }
+                    // Enrich the xmlRule object with the information available
+                    xmlRule.setCheckToExecute(ruleRS.getString("check_package") + "." + ruleRS.getString("check_class"));
+                    if (ruleRS.getObject("expectedvalue") != null) {
+                    	xmlRule.setExpectedValueRule(ruleRS.getString("expectedvalue"));
+                    	xmlRule.setExpectedValueRuleType(types.get(Integer.parseInt(ruleRS.getString("expectedvalue_type_id"))));
+                    }
+                    xmlRule.getMessages().add(new RuleMessage(RuleMessage.TYPE_FAILED, ruleRS.getString("message_passed")));
+                    xmlRule.getMessages().add(new RuleMessage(RuleMessage.TYPE_PASSED, ruleRS.getString("message_failed")));
+                    ruleCol.add(xmlRule);
+                }
+                subgroup.setRulesCollection(ruleCol);
+//                subgroup.getRulesCollection().add(xmlRule);
+                group.getSubGroupCollection().add(subgroup);
+            }
+            // Get all actions associated to the group
+            actionPS.setInt(1, Integer.parseInt(group.getId()));
+            ResultSet actionRS = actionPS.executeQuery();
+            while (actionRS.next()) {
+                action = new XmlAction(actionRS.getString("id"), actionRS.getString("description"));
+                action.setExecuteIf("passed".equals(actionRS.getString("execute_if")) ? 1 : 0);
+                action.setClassName(actionRS.getString("action_classname"));
+                action.setMethodName(actionRS.getString("action_methodname"));
+
+                // Object2 is the default rulegroup action object, just in case every object is treated as optional
+                if (actionRS.getObject("object1_parameter") != null) {
+                    ActionObject actionObject1 = new ActionObject(project.get("object_classname"), project.get("object_method_getter"));
+                    actionObject1.setIsGetter(ActionObject.METHOD_GETTER);
+                    actionObject1.setReturnType(types.get(Integer.parseInt(actionRS.getString("object1_type_id"))));
+                    Parameter parameter1 = new Parameter(types.get(Integer.parseInt(actionRS.getString("object1_parametertype_id"))), actionRS.getString("object1_parameter"));
+//                    actionObject1.setParameters(new ArrayList<>(Arrays.asList(parameter1)));
+                    actionObject1.addParameter(parameter1);
+//                    action.addActionGetterObject(actionObject1);
+                    action.getActionGetterObjects().add(actionObject1);
+                }
+                if (actionRS.getObject("object2_parameter") != null) {
+                    ActionObject actionObject2 = new ActionObject(project.get("object_classname"), project.get("object_method_setter"));
+                    actionObject2.setIsGetter(ActionObject.METHOD_SETTER);
+                    actionObject2.setReturnType(types.get(Integer.parseInt(actionRS.getString("object2_type_id"))));
+                    Parameter parameter1 = new Parameter(types.get(Integer.parseInt(actionRS.getString("object2_parametertype_id"))), actionRS.getString("object2_parameter"));
+                    Parameter parameter2 = new Parameter(types.get(Integer.parseInt(actionRS.getString("object2_type_id"))),"true", true);
+//                    actionObject2.setParameters(new ArrayList<>(Arrays.asList(parameter1, parameter2)));
+                    actionObject2.addParameter(parameter1);
+                    actionObject2.addParameter(parameter2);
+                    action.setActionSetterObject(actionObject2);
+//                    action.getActionGetterObjects().add(actionObject2);
+                }
+                if (actionRS.getObject("object3_parameter") != null) {
+                    ActionObject actionObject3 = new ActionObject(project.get("object_classname"), project.get("object_method_getter"));
+                    actionObject3.setIsGetter(ActionObject.METHOD_GETTER);
+                    actionObject3.setReturnType(types.get(Integer.parseInt(actionRS.getString("object3_type_id"))));
+                    Parameter parameter1 = new Parameter(types.get(Integer.parseInt(actionRS.getString("object3_parametertype_id"))), actionRS.getString("object3_parameter"));
+//                    actionObject3.setParameters(new ArrayList<>(Arrays.asList(parameter1)));
+                    actionObject3.addParameter(parameter1);
+                    action.getActionGetterObjects().add(actionObject3);
+//                    action.addActionGetterObject(actionObject3);
+                }
+
+                //TODO: add Mapping implementation
+//                action.setMappingCollection();
+//                action.getMappingCollection()
+
+                // TODO: Not cascading, because not sure if people can create parameter2 while not creating parameter1
+                // therefore treated as optional
+                if (actionRS.getObject("parameter1") != null) {
+                    Parameter parameter1 = new Parameter(types.get(actionRS.getInt("parameter1_type_id")), actionRS.getString("parameter1"));
+                    action.addParameter(parameter1);
+                }
+                if (actionRS.getObject("parameter2") != null) {
+                    Parameter parameter2 = new Parameter(types.get(actionRS.getInt("parameter2_type_id")), actionRS.getString("parameter2"));
+                    action.addParameter(parameter2);
+                }
+                if (actionRS.getObject("parameter3") != null) {
+                    Parameter parameter3 = new Parameter(types.get(actionRS.getInt("parameter3_type_id")), actionRS.getString("parameter3"));
+                    action.addParameter(parameter3);
+                }
+                group.getActions().add(action);
+            }
+            if (group.isValid()) {
+                groups.add(group);
+            }
+        }
+        // Close the db connections, as they are no longer necessary
+        rulePS.close();
+        actionPS.close();
+        subGroupPS.close();
+        groupPS.close();
+//        groupTagActive;
+//        private boolean subgroupTagActive;
+//        private boolean ruleTagActive;
+//        private boolean executeTagActive;
+//        private boolean actionTagActive;
+//        private boolean objectTagActive;
+
+        // We also need the reference fields that are used in the rules
+        referenceFieldPS.setInt(1, projectId);
+        ResultSet referenceFieldRS = referenceFieldPS.executeQuery();
+        while (referenceFieldRS.next()) {
+            ReferenceField tempRF = new ReferenceField();
+            tempRF.setName(referenceFieldRS.getString("name"));
+            tempRF.setNameDescriptive(referenceFieldRS.getString("name_descriptive"));
+            tempRF.setDescription(referenceFieldRS.getString("description"));
+            tempRF.setJavaTypeId(Integer.parseInt(referenceFieldRS.getString("java_type_id")));
+            referenceFields.add(tempRF);
+        }
+        referenceFieldPS.close();
+
     }
     
     /**
