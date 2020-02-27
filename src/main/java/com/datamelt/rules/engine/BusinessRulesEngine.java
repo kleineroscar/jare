@@ -370,31 +370,6 @@ public class BusinessRulesEngine
     
     /**
      * method runs the rules for all groups and subgroups
-     * against the object with the given label done with a db
-     * 
-     * @param		objectLabel		the label to use for the object
-     * @param		object			the actual object to use
-     * @param		useDB			indicator whether a db connection is used
-     * @throws		Exception		exception running the rule against the object
-     */
-    public void run(String objectLabel, Object object, boolean useDB)throws Exception
-    {
-        status = STATUS_ENGINE_EXECUTED;
-        
-        for(int i=0;i<groups.size();i++)
-        {
-        	// get the next group
-            RuleGroup group = groups.get(i);
-            
-            // apply settings of ruleengine to the group
-            applyGroupSettings(group);
-            // run the group
-            run(group,objectLabel,object, true);            
-        }
-    }
-    
-    /**
-     * method runs the rules for all groups and subgroups
      * against the object with the given label
      * 
      * @param		objectLabel		the label to use for the object
@@ -507,71 +482,6 @@ public class BusinessRulesEngine
      * @throws		Exception		exception running the rule against the object
      */
     public void run(RuleGroup group, String objectLabel, Object object)throws Exception
-    {
-        // we reset the skipped flag of the group here
-    	// a group may be skipped if it depends on another rulegroup
-    	// and that groups execution result is not as expected
-        group.setSkipped(0);
-        
-        // set the collection of maps containing key/value pairs
-        group.setMappingCollection(mappingCollection);
-        
-        // per default each rulegroup will be run
-        boolean runGroup = true;
-        // check if we have a dependent rulegroup
-        if(group.getDependentRuleGroupId()!=null && !group.getDependentRuleGroupId().equals(""))
-        {
-        	// get the dependent group from the list of groups
-        	RuleGroup dependentRuleGroup = getGroupById(group.getDependentRuleGroupId());
-        	// don't run the group if the dependent group does not exist or does not have the correct status (passed/failed)
-        	if(dependentRuleGroup!=null && dependentRuleGroup.getFailed()!=group.getDependentRuleGroupExecuteIf())
-        	{
-        		runGroup= false;
-        		group.setSkipped(1);
-        		// increase the counter for the skipped rule groups
-        		executionCollection.increaseSkippedGroupCount();
-        	}
-        }
-        if(runGroup)
-        {
-            applyGroupSettings(group);
-        	group.runRules(objectLabel, object);
-            if(group.getFailed()==1) // group failed
-            {
-            	// increase the counter of failed groups
-            	executionCollection.increaseFailedGroupCount();
-            }
-            else
-            {
-            	// increase the counter of failed groups
-            	executionCollection.increasePassedGroupCount();
-            	
-            }
-            // execution results will be added unless the preserveRuleExcecutionResults is set to false
-            executionCollection.addAll(group.getExecutionCollection().getResults());
-            // add the number of executed actions by the rulegroup
-            executionCollection.addNumberOfActionsExecuted(group.getNumberOfActionsExecuted());
-            executionCollection.addNumberOfRulesRun(group.getNumberOfRulesRun());
-            executionCollection.addNumberOfRulesFailed(group.getNumberOfRulesFailed());
-            executionCollection.addNumberOfRulesPassed(group.getNumberOfRulesPassed());
-        }
-    }
-    
-    /**
-     * method runs the rules for a given rule group against the object with the given label with the rules parse from a db.
-     * 
-     * if you run a single rule group and it is depending on another rule group
-     * make sure that the rule group it depends on is run first - a check on the result
-     * of the group it depends on (passed/failed) will be made in this method to determine if the
-     * rule group should run.
-     * 
-     * @param		group			the rule group to run
-     * @param		objectLabel		the label to use for the object
-     * @param		object			the actual object to use
-     * @param		useDB			indicator whether a db connection is used
-     * @throws		Exception		exception running the rule against the object
-     */
-    public void run(RuleGroup group, String objectLabel, Object object, boolean useDB)throws Exception
     {
         // we reset the skipped flag of the group here
     	// a group may be skipped if it depends on another rulegroup
