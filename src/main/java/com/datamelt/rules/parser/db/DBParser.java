@@ -16,7 +16,7 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-package com.datamelt.rules.parser.xml;
+package com.datamelt.rules.parser.db;
 
 import java.io.File;
 import java.io.FileNotFoundException;
@@ -39,18 +39,18 @@ import org.xml.sax.SAXParseException;
 import org.xml.sax.helpers.DefaultHandler;
 
 import com.datamelt.rules.core.util.VariableReplacer;
+import com.datamelt.rules.parser.xml.Parser;
 
 /**
- * this parser is used to parse rule definition files. rule files have to be
- * written using the syntax as documented. groups, subgroups and rules are
- * collected from the file.
+ * this parser is used to parse a database created by the business rule maintenance tool.
+ * It parses all rules corresponding to a given project name.
  * <p>
  * after the data base connection has been parsed, an arraylist of groups is
  * available, containing the subgroups and rules.
  *
  * @author oscar heimbrecht
  */
-public class Parser extends DefaultHandler implements ContentHandler {
+public class DBParser extends DefaultHandler implements ContentHandler {
 	private ArrayList<RuleGroup> groups = new ArrayList<RuleGroup>();
 	private ArrayList<ReferenceField> referenceFields = new ArrayList<ReferenceField>();
 
@@ -172,7 +172,7 @@ public class Parser extends DefaultHandler implements ContentHandler {
 			+ "WHERE g." + COLUMN_GROUP_PROJECT_ID + " = p." + COLUMN_PROJECT_ID + " "
 			+ "AND p." + COLUMN_PROJECT_NAME + " = ?;";
 	private static final String subgroupSQL = "SELECT * "
-			+ "FROM " + TABLE_SUBGROUP + " sg"
+			+ "FROM " + TABLE_SUBGROUP + " sg "
 			+ "WHERE sg." + COLUMN_SUBGROUP_RULEGROUP_ID + " = ?;";
 	private static final String ruleSQL = "SELECT * "
 			+ "FROM " + TABLE_RULE + " r, " + TABLE_CHECK + " c "
@@ -195,7 +195,7 @@ public class Parser extends DefaultHandler implements ContentHandler {
 	 *
 	 * @param replacer the replacer object
 	 */
-	public Parser(VariableReplacer replacer) {
+	public DBParser(VariableReplacer replacer) {
 		this.replacer = replacer;
 	}
 
@@ -244,20 +244,21 @@ public class Parser extends DefaultHandler implements ContentHandler {
 		groupPS.setString(1, projectName);
 		ResultSet groupRS = groupPS.executeQuery();
 		while (groupRS.next()) {
+			try {
 			// Enrich group object with information in table
 			group = new RuleGroup(groupRS.getString(COLUMN_GROUP_NAME), groupRS.getNString(COLUMN_GROUP_DESCRIPTION));
 			group.setValidFrom(groupRS.getString(COLUMN_GROUP_VALID_FROM));
 			group.setValidUntil(groupRS.getString(COLUMN_GROUP_VALID_UNTIL));
-			if (groupRS.getObject(COLUMN_GROUP_DEPENDENT_RULEGROUP_ID) != null) {
+			if (groupRS.getObject(COLUMN_GROUP_DEPENDENT_RULEGROUP_ID) != null && !groupRS.getObject(COLUMN_GROUP_DEPENDENT_RULEGROUP_ID).equals("0")) {
 				group.setDependentRuleGroupId(groupRS.getString(COLUMN_GROUP_DEPENDENT_RULEGROUP_ID));
-				if (TYPE_PASSED.equals(groupRS.getString(COLUMN_GROUP_DEPENDENT_RULEGROUP_EXECUTE_IF))) {
-					group.setDependentRuleGroupExecuteIf(0);
-				} else {
-					group.setDependentRuleGroupExecuteIf(1);
-				}
+			}
+			if (TYPE_PASSED.equals(groupRS.getString(COLUMN_GROUP_DEPENDENT_RULEGROUP_EXECUTE_IF))) {
+				group.setDependentRuleGroupExecuteIf(0);
+			} else {
+				group.setDependentRuleGroupExecuteIf(1);
 			}
 			subGroupPS.setInt(1, Integer.parseInt(groupRS.getString(COLUMN_GROUP_ID)));
-
+			
 			// Get all subgroups belonging to this group
 			ResultSet subGroupRS = subGroupPS.executeQuery();
 			while (subGroupRS.next()) {
@@ -270,7 +271,7 @@ public class Parser extends DefaultHandler implements ContentHandler {
 				// Because there could be more than one rule it is stored in a collection
 				RuleCollection ruleCol = new RuleCollection();
 				while (ruleRS.next()) {
-					// "A RuleObject a RuleObject identifies an object that will be instantiated and
+					// "A RuleObject identifies an object that will be instantiated and
 					// one of its methods will be run"
 					// most of the time this is "getFieldValue", as in read the value from a column
 					// some rules get value from multiple column, so multiple objects are possible
@@ -289,78 +290,78 @@ public class Parser extends DefaultHandler implements ContentHandler {
 						xmlRule.getRuleObjects().add(ruleObject2);
 					}
 					// Additional parameters are optional
-					if (ruleRS.getObject(COLUMN_RULE_ADDITIONAL_PARAMETER) != null) {
+					if (ruleRS.getObject(COLUMN_RULE_ADDITIONAL_PARAMETER) != null && !ruleRS.getString(COLUMN_RULE_ADDITIONAL_PARAMETER).isEmpty()) {
 						xmlRule.addParameter(new Parameter(
 								types.get(Integer.parseInt(ruleRS.getString(COLUMN_RULE_ADDITIONAL_PARAMETER_TYPE_ID))),
 								ruleRS.getString(COLUMN_RULE_ADDITIONAL_PARAMETER)));
 					}
 					// Enrich the xmlRule object with the information available
 					xmlRule.setCheckToExecute(
-							ruleRS.getString("check_package") + "." + ruleRS.getString("check_class"));
-					if (ruleRS.getObject("expectedvalue") != null) {
-						xmlRule.setExpectedValueRule(ruleRS.getString("expectedvalue"));
+							ruleRS.getString(COLUMN_CHECK_PACKAGE) + "." + ruleRS.getString(COLUMN_CHECK_CLASS));
+					if (ruleRS.getObject(COLUMN_RULE_EXPECTEDVALUE) != null) {
+						xmlRule.setExpectedValueRule(ruleRS.getString(COLUMN_RULE_EXPECTEDVALUE));
 						xmlRule.setExpectedValueRuleType(
-								types.get(Integer.parseInt(ruleRS.getString("expectedvalue_type_id"))));
+								types.get(Integer.parseInt(ruleRS.getString(COLUMN_RULE_EXPECTEDVALUE_TYPE_ID))));
 					}
 					xmlRule.getMessages()
-							.add(new RuleMessage(RuleMessage.TYPE_FAILED, ruleRS.getString("message_passed")));
+							.add(new RuleMessage(RuleMessage.TYPE_FAILED, ruleRS.getString(COLUMN_RULE_MESSAGE_PASSED)));
 					xmlRule.getMessages()
-							.add(new RuleMessage(RuleMessage.TYPE_PASSED, ruleRS.getString("message_failed")));
+							.add(new RuleMessage(RuleMessage.TYPE_PASSED, ruleRS.getString(COLUMN_RULE_MESSAGE_FAILED)));
 					ruleCol.add(xmlRule);
 				}
 				subgroup.setRulesCollection(ruleCol);
 				group.getSubGroupCollection().add(subgroup);
 			}
 			// Get all actions associated to the group
-			actionPS.setInt(1, Integer.parseInt(groupRS.getString("id")));
+			actionPS.setInt(1, Integer.parseInt(groupRS.getString(COLUMN_GROUP_ID)));
 			ResultSet actionRS = actionPS.executeQuery();
 			while (actionRS.next()) {
-				action = new XmlAction(actionRS.getString("name"), actionRS.getString("description"));
-				if ("passed".equals(actionRS.getString("execute_if"))) {
+				action = new XmlAction(actionRS.getString(COLUMN_RULEGROUPACTION_NAME), actionRS.getString(COLUMN_RULEGROUPACTION_DESCRIPTION));
+				if ("passed".equals(actionRS.getString(COLUMN_RULEGROUPACTION_EXECUTE_IF))) {
 					action.setExecuteIf(XmlAction.TYPE_PASSED);
-				} else if ("failed".equals(actionRS.getString("execute_if"))) {
+				} else if ("failed".equals(actionRS.getString(COLUMN_RULEGROUPACTION_EXECUTE_IF))) {
 					action.setExecuteIf(XmlAction.TYPE_FAILED);
 				} else {
 					action.setExecuteIf(XmlAction.TYPE_ALWAYS);
 				}
-				action.setClassName(actionRS.getString("action_classname"));
-				action.setMethodName(actionRS.getString("action_methodname"));
+				action.setClassName(actionRS.getString(COLUMN_ACTION_CLASSNAME));
+				action.setMethodName(actionRS.getString(COLUMN_ACTION_METHODNAME));
 
 				// Object2 is the default rulegroup action object, just in case every object is
 				// treated as optional
-				if (actionRS.getObject("object1_parameter") != null) {
-					ActionObject actionObject1 = new ActionObject(project.get("object_classname"),
-							project.get("object_method_getter"));
+				if (actionRS.getObject(COLUMN_RULEGROUPACTION_OBJECT1_PARAMETER) != null && !actionRS.getString(COLUMN_RULEGROUPACTION_OBJECT1_PARAMETER).isEmpty()) {
+					ActionObject actionObject1 = new ActionObject(project.get(COLUMN_PROJECT_OBJECT_CLASSNAME),
+							project.get(COLUMN_PROJECT_OBJECT_METHOD_GETTER));
 					actionObject1.setIsGetter(ActionObject.METHOD_GETTER);
-					actionObject1.setReturnType(types.get(Integer.parseInt(actionRS.getString("object1_type_id"))));
+					actionObject1.setReturnType(types.get(Integer.parseInt(actionRS.getString(COLUMN_RULEGROUPACTION_OBJECT1_TYPE_ID))));
 					Parameter parameter1 = new Parameter(
-							types.get(Integer.parseInt(actionRS.getString("object1_parametertype_id"))),
-							actionRS.getString("object1_parameter"));
+							types.get(Integer.parseInt(actionRS.getString(COLUMN_RULEGROUPACTION_OBJECT1_PARAMETERTYPE_ID))),
+							actionRS.getString(COLUMN_RULEGROUPACTION_OBJECT1_PARAMETER));
 					actionObject1.addParameter(parameter1);
 					action.getActionGetterObjects().add(actionObject1);
 				}
-				if (actionRS.getObject("object2_parameter") != null) {
-					ActionObject actionObject2 = new ActionObject(project.get("object_classname"),
-							project.get("object_method_setter"));
+				if (actionRS.getObject(COLUMN_RULEGROUPACTION_OBJECT2_PARAMETER) != null && !actionRS.getString(COLUMN_RULEGROUPACTION_OBJECT2_PARAMETER).isEmpty()) {
+					ActionObject actionObject2 = new ActionObject(project.get(COLUMN_PROJECT_OBJECT_CLASSNAME),
+							project.get(COLUMN_PROJECT_OBJECT_METHOD_SETTER));
 					actionObject2.setIsGetter(ActionObject.METHOD_SETTER);
-					actionObject2.setReturnType(types.get(Integer.parseInt(actionRS.getString("object2_type_id"))));
+					actionObject2.setReturnType(types.get(Integer.parseInt(actionRS.getString(COLUMN_RULEGROUPACTION_OBJECT2_TYPE_ID))));
 					Parameter parameter1 = new Parameter(
-							types.get(Integer.parseInt(actionRS.getString("object2_parametertype_id"))),
-							actionRS.getString("object2_parameter"));
+							types.get(Integer.parseInt(actionRS.getString(COLUMN_RULEGROUPACTION_OBJECT2_PARAMETERTYPE_ID))),
+							actionRS.getString(COLUMN_RULEGROUPACTION_OBJECT2_PARAMETER));
 					Parameter parameter2 = new Parameter(
-							types.get(Integer.parseInt(actionRS.getString("object2_type_id"))), "true", true);
+							types.get(Integer.parseInt(actionRS.getString(COLUMN_RULEGROUPACTION_OBJECT2_TYPE_ID))), TYPE_TRUE, true);
 					actionObject2.addParameter(parameter1);
 					actionObject2.addParameter(parameter2);
 					action.setActionSetterObject(actionObject2);
 				}
-				if (actionRS.getObject("object3_parameter") != null) {
-					ActionObject actionObject3 = new ActionObject(project.get("object_classname"),
-							project.get("object_method_getter"));
+				if (actionRS.getObject(COLUMN_RULEGROUPACTION_OBJECT3_PARAMETER) != null && !actionRS.getString(COLUMN_RULEGROUPACTION_OBJECT3_PARAMETER).isEmpty()) {
+					ActionObject actionObject3 = new ActionObject(project.get(COLUMN_PROJECT_OBJECT_CLASSNAME),
+							project.get(COLUMN_PROJECT_OBJECT_METHOD_GETTER));
 					actionObject3.setIsGetter(ActionObject.METHOD_GETTER);
-					actionObject3.setReturnType(types.get(Integer.parseInt(actionRS.getString("object3_type_id"))));
+					actionObject3.setReturnType(types.get(Integer.parseInt(actionRS.getString(COLUMN_RULEGROUPACTION_OBJECT3_TYPE_ID))));
 					Parameter parameter1 = new Parameter(
-							types.get(Integer.parseInt(actionRS.getString("object3_parametertype_id"))),
-							actionRS.getString("object3_parameter"));
+							types.get(Integer.parseInt(actionRS.getString(COLUMN_RULEGROUPACTION_OBJECT3_PARAMETERTYPE_ID))),
+							actionRS.getString(COLUMN_RULEGROUPACTION_OBJECT3_PARAMETER));
 					actionObject3.addParameter(parameter1);
 					action.getActionGetterObjects().add(actionObject3);
 				}
@@ -369,28 +370,32 @@ public class Parser extends DefaultHandler implements ContentHandler {
 //                action.setMappingCollection();
 //                action.getMappingCollection()
 
-				// TODO: Not cascading, because not sure if people can create parameter2 while
+				// Not cascading, because people can create parameter2 while
 				// not creating parameter1
 				// therefore treated as optional
-				if (actionRS.getObject("parameter1") != null) {
-					Parameter parameter1 = new Parameter(types.get(actionRS.getInt("parameter1_type_id")),
-							actionRS.getString("parameter1"));
+				if (actionRS.getObject(COLUMN_RULEGROUPACTION_PARAMETER1) != null && !actionRS.getString(COLUMN_RULEGROUPACTION_PARAMETER1).isEmpty()) {
+					Parameter parameter1 = new Parameter(types.get(actionRS.getInt(COLUMN_RULEGROUPACTION_PARAMETER1_TYPE_ID)),
+							actionRS.getString(COLUMN_RULEGROUPACTION_PARAMETER1));
 					action.addParameter(parameter1);
 				}
-				if (actionRS.getObject("parameter2") != null) {
-					Parameter parameter2 = new Parameter(types.get(actionRS.getInt("parameter2_type_id")),
-							actionRS.getString("parameter2"));
+				if (actionRS.getObject(COLUMN_RULEGROUPACTION_PARAMETER2) != null && !actionRS.getString(COLUMN_RULEGROUPACTION_PARAMETER2).isEmpty()) {
+					Parameter parameter2 = new Parameter(types.get(actionRS.getInt(COLUMN_RULEGROUPACTION_PARAMETER2_TYPE_ID)),
+							actionRS.getString(COLUMN_RULEGROUPACTION_PARAMETER2));
 					action.addParameter(parameter2);
 				}
-				if (actionRS.getObject("parameter3") != null) {
-					Parameter parameter3 = new Parameter(types.get(actionRS.getInt("parameter3_type_id")),
-							actionRS.getString("parameter3"));
+				if (actionRS.getObject(COLUMN_RULEGROUPACTION_PARAMETER3) != null && !actionRS.getString(COLUMN_RULEGROUPACTION_PARAMETER3).isEmpty()) {
+					Parameter parameter3 = new Parameter(types.get(actionRS.getInt(COLUMN_RULEGROUPACTION_PARAMETER3_TYPE_ID)),
+							actionRS.getString(COLUMN_RULEGROUPACTION_PARAMETER3));
 					action.addParameter(parameter3);
 				}
 				group.getActions().add(action);
 			}
 			if (group.isValid()) {
 				groups.add(group);
+			}
+			} catch (Exception e) {
+				System.out.println("Couldn't create rulegroup for id " + groupRS.getString(COLUMN_GROUP_ID));
+				e.printStackTrace();
 			}
 		}
 		// Close the db connections, as they are no longer necessary
@@ -404,10 +409,10 @@ public class Parser extends DefaultHandler implements ContentHandler {
 		ResultSet referenceFieldRS = referenceFieldPS.executeQuery();
 		while (referenceFieldRS.next()) {
 			ReferenceField tempRF = new ReferenceField();
-			tempRF.setName(referenceFieldRS.getString("name"));
-			tempRF.setNameDescriptive(referenceFieldRS.getString("name_descriptive"));
-			tempRF.setDescription(referenceFieldRS.getString("description"));
-			tempRF.setJavaTypeId(Integer.parseInt(referenceFieldRS.getString("java_type_id")));
+			tempRF.setName(referenceFieldRS.getString(COLUMN_REFERENCE_FIELDS_NAME));
+			tempRF.setNameDescriptive(referenceFieldRS.getString(COLUMN_REFERENCE_FIELDS_NAME_DESCRIPTTIVE));
+			tempRF.setDescription(referenceFieldRS.getString(COLUMN_REFERENCE_FIELDS_DESCRIPTION));
+			tempRF.setJavaTypeId(Integer.parseInt(referenceFieldRS.getString(COLUMN_REFERENCE_FIELDS_JAVA_TYPE_ID)));
 			referenceFields.add(tempRF);
 		}
 		referenceFieldPS.close();

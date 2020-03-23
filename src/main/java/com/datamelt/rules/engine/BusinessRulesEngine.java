@@ -36,6 +36,7 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
 
 import com.datamelt.rules.parser.xml.Parser;
+import com.datamelt.rules.parser.db.DBParser;
 import com.datamelt.rules.core.ReferenceField;
 import com.datamelt.rules.core.RuleExecutionCollection;
 import com.datamelt.rules.core.RuleGroup;
@@ -363,9 +364,9 @@ public class BusinessRulesEngine
      * @param		projectID		the id of the project we want to parse
      * @exception	Exception		exception when the file could not be located or parsed
      */
-    public BusinessRulesEngine(Connection connection, int projectID) throws Exception
+    public BusinessRulesEngine(Connection connection, String projectName) throws Exception
     {
-        reloadDBConnection(connection, projectID);
+        reloadDBConnection(connection, projectName);
     }
     
     /**
@@ -650,13 +651,13 @@ public class BusinessRulesEngine
      * @param projectID		id of the project we want to parse
      * @throws Exception	exception when the file could not be located or parsed
      */
-    public void reloadDBConnection(Connection connection, int projectID) throws Exception
+    public void reloadDBConnection(Connection connection, String projectName) throws Exception
     {
     	clear();
     	groups.clear();
         referenceFields.clear();
 
-    	parseDBConnection(connection, projectID);
+    	parseDBConnection(connection, projectName);
         prioritizeRuleGroups();
     }
     
@@ -763,11 +764,11 @@ public class BusinessRulesEngine
      * @param projectID		the id of the project to parse
      * @throws Exception	exception when an error occurs
      */
-    private void parseDBConnection(Connection conn, int projectID) throws Exception
+    private void parseDBConnection(Connection conn, String projectName) throws Exception
     {
     	// create a parser object to parse the xml file
-    	Parser parser = new Parser(replacer);
-    	parser.parse(conn, projectID);
+    	DBParser parser = new DBParser(replacer);
+    	parser.parse(conn, projectName);
     	
     	groups.addAll(parser.getGroups());
     	referenceFields.addAll(parser.getReferenceFields());
