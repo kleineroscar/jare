@@ -366,10 +366,6 @@ public class DBParser extends DefaultHandler implements ContentHandler {
 					action.getActionGetterObjects().add(actionObject3);
 				}
 
-				// TODO: add Mapping implementation
-//                action.setMappingCollection();
-//                action.getMappingCollection()
-
 				// Not cascading, because people can create parameter2 while
 				// not creating parameter1
 				// therefore treated as optional
